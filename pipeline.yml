@@ -2,68 +2,76 @@ name: CI/CD Pipeline - CarbonFooter
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
   pull_request:
-    branches:
-      - main
+    branches: [ "main" ]
 
-jobs: 
+env:
+  ACR_NAME: acrcarbonfooterjoao
+  RG_NAME: rg-carbonfooter
+  IMAGE_NAME: carbonfooter-api
 
-// Etapa 1 - Builds e Testes
-
-  build-and-test
+jobs:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - name: Code Checkout
-        uses: actions/checkout@v2
-      
-      - name: Configure .NET 10
-        uses: actions/setup-dotnet@v1
-        with:
-          dotnet-version: '10.0.x'
-      
-      - name: Restore Dependencies
-        run: dotnet restore
+    - name: Checkout do código
+      uses: actions/checkout@v4
 
-      - name: Build
-        run: dotnet build --configuration Release --no-restore
+    - name: Configurar o .NET 10
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
 
-      - name: Run Tests
-        run: dotnet test --no-build --configuration Release --verbosity normal
-      
-// Etapa 2 - Deploy Staging (Continuous Deployment))
+    - name: Restaurar dependências
+      run: dotnet restore
 
-  deploy-staging: 
+    - name: Build da aplicação
+      run: dotnet build --no-restore --configuration Release
+
+    - name: Executar Testes Automatizados
+      run: dotnet test --no-build --configuration Release --verbosity normal
+
+  deploy-staging:
     needs: build-and-test
     runs-on: ubuntu-latest
     environment: staging
     steps:
-      - name: Code Checkout
-        users: actions/checkout@v2
-
-      - name: Login to Azure
+      - name: Checkout do código
+        uses: actions/checkout@v4
+        
+      - name: Login na Azure
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+          
+      - name: Login no Container Registry (ACR)
+        run: az acr login --name ${{ env.ACR_NAME }}
+        
+      - name: Build e Push da Imagem Docker
+        run: |
+          docker build -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }} .
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          
+      - name: Deploy no ambiente de Staging
+        run: |
+          ACR_PASSWORD=$(az acr credential show --name ${{ env.ACR_NAME }} --query "passwords[0].value" -o tsv)
+          az webapp config container set --name carbonfooter-staging-joao --resource-group ${{ env.RG_NAME }} --docker-custom-image-name ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }} --docker-registry-server-url https://${{ env.ACR_NAME }}.azurecr.io --docker-registry-server-user ${{ env.ACR_NAME }} --docker-registry-server-password $ACR_PASSWORD
 
-      - name: Deploy to Azure Web App
-        run: echo "Deploying to Azure Web App..."
-       # run: az webapp up --name carbonfooter-staging --resource-group rg-esg
-
-   deploy-production:
+  deploy-production:
     needs: deploy-staging
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - name: Code Checkout
+      - name: Checkout do código
         uses: actions/checkout@v4
-
-      - name: Login to Azure
+        
+      - name: Login na Azure
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Deploy to Azure Web App
-        run: echo "Deploying to Azure Web App..."
-       # run: az webapp up --name carbonfooter-production --resource-group rg-esg
+          
+      - name: Deploy no ambiente de Produção
+        run: |
+          ACR_PASSWORD=$(az acr credential show --name ${{ env.ACR_NAME }} --query "passwords[0].value" -o tsv)
+          az webapp config container set --name carbonfooter-prod-joao --resource-group ${{ env.RG_NAME }} --docker-custom-image-name ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }} --docker-registry-server-url https://${{ env.ACR_NAME }}.azurecr.io --docker-registry-server-user ${{ env.ACR_NAME }} --docker-registry-server-password $ACR_PASSWORD
