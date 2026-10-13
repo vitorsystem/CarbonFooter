@@ -1,0 +1,79 @@
+name: CI/CD Pipeline - CarbonFooter
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  ACR_NAME: acrcarbonfooterjoao
+  RG_NAME: rg-carbonfooter
+  IMAGE_NAME: carbonfooter-api
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout do código
+      uses: actions/checkout@v4
+
+    - name: Configurar o .NET 10
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Restaurar dependências
+      run: dotnet restore
+
+    - name: Build da aplicação
+      run: dotnet build --no-restore --configuration Release
+
+    - name: Executar Testes Automatizados
+      run: dotnet test --no-build --configuration Release --verbosity normal
+
+  deploy-staging:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+        
+      - name: Login na Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          
+      - name: Login no Container Registry (ACR)
+        run: az acr login --name ${{ env.ACR_NAME }}
+        
+      - name: Build e Push da Imagem Docker no ACR
+        run: |
+          ACR_PASSWORD=$(az acr credential show --name ${{ env.ACR_NAME }} --resource-group ${{ env.RG_NAME }} --query "passwords[0].value" -o tsv)
+          echo "$ACR_PASSWORD" | docker login ${{ env.ACR_NAME }}.azurecr.io -u ${{ env.ACR_NAME }} --password-stdin
+          docker build -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }} .
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          
+      - name: Deploy no ambiente de Staging
+        run: |
+          ACR_PASSWORD=$(az acr credential show --name ${{ env.ACR_NAME }} --query "passwords[0].value" -o tsv)
+          az webapp config container set --name carbonfooter-staging-joao --resource-group ${{ env.RG_NAME }} --docker-custom-image-name ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }} --docker-registry-server-url https://${{ env.ACR_NAME }}.azurecr.io --docker-registry-server-user ${{ env.ACR_NAME }} --docker-registry-server-password $ACR_PASSWORD
+
+  deploy-production:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+        
+      - name: Login na Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          
+      - name: Deploy no ambiente de Produção
+        run: |
+          ACR_PASSWORD=$(az acr credential show --name ${{ env.ACR_NAME }} --query "passwords[0].value" -o tsv)
+          az webapp config container set --name carbonfooter-prod-joao --resource-group ${{ env.RG_NAME }} --docker-custom-image-name ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }} --docker-registry-server-url https://${{ env.ACR_NAME }}.azurecr.io --docker-registry-server-user ${{ env.ACR_NAME }} --docker-registry-server-password $ACR_PASSWORD
